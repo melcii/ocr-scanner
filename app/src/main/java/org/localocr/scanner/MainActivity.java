@@ -79,7 +79,15 @@ public class MainActivity extends Activity {
             String path = u.getPath();
             if (path == null || path.equals("/")) path = "/index.html";
             try {
-                InputStream in = getAssets().open("www" + path);
+                InputStream in;
+                try {
+                    in = getAssets().open("www" + path);
+                } catch (IOException notFound) {
+                    // The Gradle build un-gzips "*.gz" assets and drops the extension.
+                    // The OCR engine checks the gzip header itself, so plain data is fine.
+                    if (!path.endsWith(".gz")) throw notFound;
+                    in = getAssets().open("www" + path.substring(0, path.length() - 3));
+                }
                 WebResourceResponse r = new WebResourceResponse(mime(path), null, in);
                 Map<String, String> h = new HashMap<String, String>();
                 h.put("Access-Control-Allow-Origin", "*");
