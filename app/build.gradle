@@ -1,0 +1,23 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'org.localocr.scanner'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'org.localocr.scanner'
+        minSdk 24
+        targetSdk 33
+        versionCode 1
+        versionName '1.0'
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug   // sideload-ready; swap in your own key for Play Store
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
