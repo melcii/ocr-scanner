@@ -12,7 +12,7 @@ Point your camera at a page, sign or screenshot and get the text out of it. The 
 - **Edit, copy or share** the text it finds
 - **Share to OCR Scanner** from any app, such as the screenshot preview, to scan an image right away
 - **Screenshot alerts** (optional, off by default): after you take a screenshot, a notification offers to scan it
-- **Private by design**: no internet access, no accounts, no tracking
+- **Private by design**: no internet access, no accounts, no ads, no tracking
 
 ## Download
 
