@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No plain-HTTP, system certificates only (user-installed CAs not trusted),
+     certificate transparency required. The app makes no network requests anyway. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <certificateTransparency enabled="true" />
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

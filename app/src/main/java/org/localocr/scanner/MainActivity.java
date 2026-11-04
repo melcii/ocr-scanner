@@ -2,15 +2,23 @@ package org.localocr.scanner;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PersistableBundle;
+import android.provider.MediaStore;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
@@ -20,6 +28,9 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -28,10 +39,14 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Thin native shell. The OCR engine (Tesseract, compiled to WebAssembly) and its
- * language models ship inside the APK's assets and are served to the WebView from
- * a virtual origin. Every request to any other host is refused, so nothing ever
- * leaves the device.
+ * Thin native shell around a local web UI.
+ *
+ * The OCR engine (Tesseract compiled to WebAssembly) and its language models ship in the
+ * APK's assets and are served to the WebView from a virtual https origin. Every request to
+ * any other host is refused, so images and text never leave the device.
+ *
+ * Built for Android 17 (API 37): edge-to-edge insets, predictive back, system photo picker,
+ * no backups/device transfer of app data, and a locked-down WebView.
  */
 public class MainActivity extends Activity {
 
@@ -39,33 +54,105 @@ public class MainActivity extends Activity {
     private static final String START_URL = "https://" + HOST + "/index.html";
     private static final int REQ_FILE = 1;
     private static final int REQ_CAMERA = 2;
+    private static final int MAX_SHARE_CHARS = 100_000;
 
+    private FrameLayout root;
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
     private PermissionRequest pendingPermission;
 
+    // Predictive back (API 33+): only intercept back while the in-app camera is open,
+    // otherwise let the system play its back-to-home animation.
+    private Object cameraBackCallback; // OnBackInvokedCallback, typed as Object for API < 33
+    private boolean cameraOpen = false;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(Color.parseColor("#0f1115"));
-        getWindow().setNavigationBarColor(Color.parseColor("#0f1115"));
+        boolean dark = isDarkMode();
+        int bg = Color.parseColor(dark ? "#0f1115" : "#f4f5f8");
 
+        root = new FrameLayout(this);
+        root.setBackgroundColor(bg);
         web = new WebView(this);
-        web.setBackgroundColor(Color.parseColor("#0f1115"));
-        setContentView(web);
+        web.setBackgroundColor(bg);
+        root.addView(web, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(root);
 
+        setUpEdgeToEdge(dark, bg);
+        configureWebView();
+        web.loadUrl(START_URL);
+    }
+
+    private boolean isDarkMode() {
+        int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return mode == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    // ---- Edge-to-edge (enforced for apps targeting API 35+) ----
+    @SuppressWarnings("deprecation")
+    private void setUpEdgeToEdge(boolean dark, int bg) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                @Override
+                public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                    android.graphics.Insets bars = insets.getInsets(
+                            WindowInsets.Type.systemBars()
+                                    | WindowInsets.Type.displayCutout()
+                                    | WindowInsets.Type.ime());
+                    v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                    return WindowInsets.CONSUMED;
+                }
+            });
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                int light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                c.setSystemBarsAppearance(dark ? 0 : light, light);
+            }
+        } else {
+            getWindow().setStatusBarColor(bg);
+            getWindow().setNavigationBarColor(bg);
+            if (!dark) {
+                getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+            }
+        }
+    }
+
+    // ---- WebView lockdown ----
+    private void configureWebView() {
         WebSettings s = web.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setMediaPlaybackRequiresUserGesture(false);
-        s.setAllowFileAccess(false);
-        s.setAllowContentAccess(true);
+        s.setJavaScriptEnabled(true);           // the UI and OCR engine are JavaScript
+        s.setDomStorageEnabled(false);          // nothing is stored
+        s.setDatabaseEnabled(false);
+        s.setAllowFileAccess(false);            // no file:// access
+        s.setAllowContentAccess(false);         // no content:// URL loading (picker uses its own channel)
+        s.setGeolocationEnabled(false);
+        s.setSupportMultipleWindows(false);
+        s.setJavaScriptCanOpenWindowsAutomatically(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        s.setMediaPlaybackRequiresUserGesture(false); // camera preview <video>
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        s.setSaveFormData(false);
+        if (Build.VERSION.SDK_INT >= 26) {
+            // Safe Browsing checks remote URLs; this app only ever shows its own bundled page,
+            // and turning it off keeps the app from contacting any server at all.
+            s.setSafeBrowsingEnabled(false);
+        }
+        WebView.setWebContentsDebuggingEnabled(false);
 
         web.addJavascriptInterface(new Bridge(), "AndroidBridge");
         web.setWebViewClient(new LocalOnlyClient());
         web.setWebChromeClient(new Chrome());
-        web.loadUrl(START_URL);
+    }
+
+    /** True only when the WebView is showing our own bundled page. Call on the UI thread. */
+    private boolean isTrustedPage() {
+        String url = web.getUrl();
+        return url != null && HOST.equals(Uri.parse(url).getHost())
+                && "https".equals(Uri.parse(url).getScheme());
     }
 
     // ---- Serve bundled assets; block everything else ----
@@ -73,11 +160,11 @@ public class MainActivity extends Activity {
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
             Uri u = req.getUrl();
-            String scheme = u.getScheme();
-            if ("blob".equals(scheme) || "data".equals(scheme)) return null; // in-memory, local
-            if (!HOST.equals(u.getHost())) return blocked();
+            if (!"https".equals(u.getScheme()) || !HOST.equals(u.getHost())) return empty(403, "Offline app");
+            if (!"GET".equalsIgnoreCase(req.getMethod())) return empty(405, "Method Not Allowed");
             String path = u.getPath();
             if (path == null || path.equals("/")) path = "/index.html";
+            if (path.contains("..")) return empty(400, "Bad Request");
             try {
                 InputStream in;
                 try {
@@ -90,15 +177,16 @@ public class MainActivity extends Activity {
                 }
                 WebResourceResponse r = new WebResourceResponse(mime(path), null, in);
                 Map<String, String> h = new HashMap<String, String>();
-                h.put("Access-Control-Allow-Origin", "*");
+                h.put("Access-Control-Allow-Origin", "https://" + HOST);
                 h.put("Cache-Control", "no-store");
+                h.put("X-Content-Type-Options", "nosniff");
+                h.put("Cross-Origin-Resource-Policy", "same-origin");
+                h.put("Referrer-Policy", "no-referrer");
+                h.put("Permissions-Policy", "geolocation=(), microphone=(), payment=(), usb=()");
                 r.setResponseHeaders(h);
                 return r;
             } catch (IOException e) {
-                WebResourceResponse r = new WebResourceResponse("text/plain", "utf-8",
-                        new ByteArrayInputStream(new byte[0]));
-                r.setStatusCodeAndReasonPhrase(404, "Not Found");
-                return r;
+                return empty(404, "Not Found");
             }
         }
 
@@ -107,37 +195,38 @@ public class MainActivity extends Activity {
             return !HOST.equals(req.getUrl().getHost()); // never navigate away
         }
 
-        private WebResourceResponse blocked() {
+        private WebResourceResponse empty(int code, String reason) {
             WebResourceResponse r = new WebResourceResponse("text/plain", "utf-8",
                     new ByteArrayInputStream(new byte[0]));
-            r.setStatusCodeAndReasonPhrase(403, "Offline app");
+            r.setStatusCodeAndReasonPhrase(code, reason);
             return r;
         }
 
         private String mime(String p) {
             if (p.endsWith(".html")) return "text/html";
-            if (p.endsWith(".js")) return "application/javascript";
-            if (p.endsWith(".wasm")) return "application/wasm";
+            if (p.endsWith(".js")) return "text/javascript";
             if (p.endsWith(".css")) return "text/css";
+            if (p.endsWith(".wasm")) return "application/wasm";
             if (p.endsWith(".svg")) return "image/svg+xml";
             if (p.endsWith(".png")) return "image/png";
-            return "application/octet-stream"; // .traineddata.gz is decompressed by the engine
+            return "application/octet-stream"; // language models
         }
     }
 
-    // ---- Camera permission + gallery picker ----
+    // ---- Camera permission + image picker ----
     private class Chrome extends WebChromeClient {
         @Override
         public void onPermissionRequest(final PermissionRequest request) {
             runOnUiThread(new Runnable() { @Override public void run() {
-                boolean wantsCamera = false;
-                for (String r : request.getResources()) {
-                    if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) wantsCamera = true;
-                }
-                if (!wantsCamera) { request.deny(); return; }
+                Uri origin = request.getOrigin();
+                boolean trusted = origin != null && HOST.equals(origin.getHost());
+                boolean onlyCamera = request.getResources().length == 1
+                        && PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(request.getResources()[0]);
+                if (!trusted || !onlyCamera) { request.deny(); return; }
                 if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                     request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
                 } else {
+                    if (pendingPermission != null) pendingPermission.deny();
                     pendingPermission = request;
                     requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
                 }
@@ -145,17 +234,36 @@ public class MainActivity extends Activity {
         }
 
         @Override
+        public void onPermissionRequestCanceled(PermissionRequest request) {
+            if (pendingPermission == request) pendingPermission = null;
+        }
+
+        @Override
         public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams params) {
             if (fileCallback != null) fileCallback.onReceiveValue(null);
             fileCallback = cb;
-            Intent i = new Intent(Intent.ACTION_GET_CONTENT);
-            i.addCategory(Intent.CATEGORY_OPENABLE);
-            i.setType("image/*");
+            Intent i;
+            if (Build.VERSION.SDK_INT >= 33) {
+                // System photo picker: no storage permission, user picks exactly one image.
+                i = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                i.setType("image/*");
+            } else {
+                i = new Intent(Intent.ACTION_GET_CONTENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("image/*");
+            }
             try {
-                startActivityForResult(Intent.createChooser(i, "Choose image"), REQ_FILE);
-            } catch (Exception e) {
-                fileCallback = null;
-                return false;
+                startActivityForResult(i, REQ_FILE);
+            } catch (ActivityNotFoundException e) {
+                try {
+                    Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+                    fallback.addCategory(Intent.CATEGORY_OPENABLE);
+                    fallback.setType("image/*");
+                    startActivityForResult(fallback, REQ_FILE);
+                } catch (ActivityNotFoundException e2) {
+                    fileCallback = null;
+                    return false;
+                }
             }
             return true;
         }
@@ -187,39 +295,94 @@ public class MainActivity extends Activity {
         super.onActivityResult(code, result, data);
     }
 
-    // ---- Copy / share from JS ----
+    // ---- Copy / share / camera state from JS (only honoured for our own page) ----
     private class Bridge {
         @JavascriptInterface
         public void copy(final String text) {
+            if (text == null) return;
             runOnUiThread(new Runnable() { @Override public void run() {
+                if (!isTrustedPage()) return;
                 ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                cm.setPrimaryClip(ClipData.newPlainText("OCR text", text));
+                ClipData clip = ClipData.newPlainText("OCR text", text);
+                if (Build.VERSION.SDK_INT >= 24) {
+                    // Scanned text can contain personal data: keep it out of the clipboard preview.
+                    PersistableBundle extras = new PersistableBundle();
+                    extras.putBoolean(Build.VERSION.SDK_INT >= 33
+                            ? ClipDescription.EXTRA_IS_SENSITIVE : "android.content.extra.IS_SENSITIVE", true);
+                    clip.getDescription().setExtras(extras);
+                }
+                cm.setPrimaryClip(clip);
             }});
         }
 
         @JavascriptInterface
         public void share(final String text) {
+            if (text == null) return;
             runOnUiThread(new Runnable() { @Override public void run() {
+                if (!isTrustedPage()) return;
+                String t = text.length() > MAX_SHARE_CHARS ? text.substring(0, MAX_SHARE_CHARS) : text;
                 Intent i = new Intent(Intent.ACTION_SEND);
                 i.setType("text/plain");
-                i.putExtra(Intent.EXTRA_TEXT, text);
+                i.putExtra(Intent.EXTRA_TEXT, t);
                 startActivity(Intent.createChooser(i, "Share text"));
+            }});
+        }
+
+        @JavascriptInterface
+        public void setCameraOpen(final boolean open) {
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (!isTrustedPage()) return;
+                cameraOpen = open;
+                updateBackCallback();
             }});
         }
     }
 
+    // ---- Back handling: predictive back on API 33+, legacy below ----
+    private void updateBackCallback() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        OnBackInvokedDispatcher d = getOnBackInvokedDispatcher();
+        if (cameraOpen && cameraBackCallback == null) {
+            OnBackInvokedCallback cb = new OnBackInvokedCallback() {
+                @Override public void onBackInvoked() { closeCameraFromNative(); }
+            };
+            d.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb);
+            cameraBackCallback = cb;
+        } else if (!cameraOpen && cameraBackCallback != null) {
+            d.unregisterOnBackInvokedCallback((OnBackInvokedCallback) cameraBackCallback);
+            cameraBackCallback = null;
+        }
+    }
+
+    private void closeCameraFromNative() {
+        web.evaluateJavascript("window.onBackPressed && window.onBackPressed()", null);
+    }
+
     @Override
+    @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        web.evaluateJavascript("window.onBackPressed && window.onBackPressed()", new ValueCallback<String>() {
-            @Override public void onReceiveValue(String handled) {
-                if (!"true".equals(handled)) MainActivity.super.onBackPressed();
-            }
-        });
+        // Only reached on Android 12L and below (predictive back handles 13+).
+        if (cameraOpen) { closeCameraFromNative(); return; }
+        super.onBackPressed();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Release the camera when the app leaves the screen.
+        if (cameraOpen) closeCameraFromNative();
     }
 
     @Override
     protected void onDestroy() {
-        if (web != null) web.destroy();
+        if (pendingPermission != null) { pendingPermission.deny(); pendingPermission = null; }
+        if (fileCallback != null) { fileCallback.onReceiveValue(null); fileCallback = null; }
+        if (web != null) {
+            web.removeJavascriptInterface("AndroidBridge");
+            root.removeView(web);
+            web.destroy();
+            web = null;
+        }
         super.onDestroy();
     }
 }

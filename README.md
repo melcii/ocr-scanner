@@ -9,9 +9,9 @@ Features: in-app camera with flash, gallery import, rotate, English / Türkçe /
 1. **GitHub (no installs):** push this folder to a GitHub repo → Actions tab → "Build APK" runs automatically →
    download `OCRScanner-apk` from the run (~10 MB APK inside the zip).
 2. **Android Studio:** File → Open this folder → Build → Build APK(s).
-3. **Command line with the SDK:** `./build-local.sh` (needs build-tools + platform 33).
+3. **Command line with the SDK:** `./build-local.sh` (needs build-tools + platform 37).
 
-Install: copy the APK to the phone and open it (allow "install unknown apps" when asked). Android 7.0+.
+Install: copy the APK to the phone and open it (allow "install unknown apps" when asked). Android 7.0+, built for Android 17 (API 37).
 
 ## Layout
 - `app/src/main/assets/www/index.html` — the whole UI + OCR logic
