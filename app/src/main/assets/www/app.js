@@ -148,6 +148,31 @@
     return false;
   };
 
+
+  // Images handed over by Android (Share menu, screenshot notification)
+  window.openSharedImage = (url) => {
+    if ($('camera').classList.contains('open')) closeCamera();
+    loadImage(url);
+  };
+
+  // Screenshot alerts setting (only inside the Android app)
+  const DEFAULT_ALERT_MSG = 'Offer to scan right after you take a screenshot';
+  if (bridge && bridge.getScreenshotAlerts) {
+    $('alertRow').hidden = false;
+    $('alertToggle').checked = !!bridge.getScreenshotAlerts();
+    $('alertToggle').onchange = (e) => {
+      $('alertMsg').textContent = e.target.checked ? 'Asking for permission…' : DEFAULT_ALERT_MSG;
+      $('alertMsg').classList.remove('warn');
+      bridge.setScreenshotAlerts(e.target.checked);
+    };
+  }
+  window.onScreenshotAlerts = (on, msg) => {
+    $('alertToggle').checked = on;
+    $('alertMsg').textContent = msg || (on ? 'On — you\'ll get a notification after each screenshot' : DEFAULT_ALERT_MSG);
+    $('alertMsg').classList.toggle('warn', !!msg);
+    if (on) toast('Screenshot alerts on');
+  };
+
   // Copy / share
   $('copyBtn').onclick = async () => {
     const text = $('out').value;

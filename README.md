@@ -4,6 +4,8 @@ Image-to-text scanner. Tesseract OCR (WebAssembly) + English & Turkish models sh
 the app refuses every network request, so images never leave the phone.
 
 Features: in-app camera with flash, gallery import, rotate, English / Türkçe / both, editable result, copy & share.
+Share any image to "OCR Scanner" from another app (e.g. the screenshot preview) to scan it instantly.
+Optional "Screenshot alerts" (off by default): a notification after each screenshot offering to scan it. It uses Android's content-change job trigger, so nothing runs in the background between screenshots; it needs photo + notification permission.
 
 ## Get the APK — pick one
 1. **GitHub (no installs):** push this folder to a GitHub repo → Actions tab → "Build APK" runs automatically →

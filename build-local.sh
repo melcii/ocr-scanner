@@ -8,7 +8,7 @@ OUT=build; rm -rf $OUT; mkdir -p $OUT/classes $OUT/dex
 "$BT/aapt2" compile --dir app/src/main/res -o $OUT/res.zip
 sed 's#<manifest #<manifest package="org.localocr.scanner" #' app/src/main/AndroidManifest.xml > $OUT/AndroidManifest.xml
 "$BT/aapt2" link -o $OUT/base.apk -I "$JAR" --manifest $OUT/AndroidManifest.xml --min-sdk-version 24 --target-sdk-version 37 \
-  --version-code 2 --version-name 1.1 -A app/src/main/assets -0 gz $OUT/res.zip
+  --version-code 3 --version-name 1.2 -A app/src/main/assets -0 gz $OUT/res.zip
 javac -Xlint:-options --release 8 -classpath "$JAR" -d $OUT/classes app/src/main/java/org/localocr/scanner/*.java 2>/dev/null \
  || javac -source 8 -target 8 -bootclasspath "$JAR" -d $OUT/classes app/src/main/java/org/localocr/scanner/*.java
 "$BT/d8" --min-api 24 --lib "$JAR" --output $OUT/dex $(find $OUT/classes -name '*.class')

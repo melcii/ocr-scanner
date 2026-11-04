@@ -2,6 +2,7 @@ package org.localocr.scanner;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.NotificationManager;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipDescription;
@@ -16,6 +17,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.PersistableBundle;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -35,7 +37,9 @@ import android.window.OnBackInvokedDispatcher;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -54,6 +58,8 @@ public class MainActivity extends Activity {
     private static final String START_URL = "https://" + HOST + "/index.html";
     private static final int REQ_FILE = 1;
     private static final int REQ_CAMERA = 2;
+    private static final int REQ_ALERTS = 3;
+    private static final String SHARED_PREFIX = "/shared/";
     private static final int MAX_SHARE_CHARS = 100_000;
 
     private FrameLayout root;
@@ -65,6 +71,13 @@ public class MainActivity extends Activity {
     // otherwise let the system play its back-to-home animation.
     private Object cameraBackCallback; // OnBackInvokedCallback, typed as Object for API < 33
     private boolean cameraOpen = false;
+
+    // Image handed to us by Share or by a screenshot notification. Served to the page at
+    // https://appassets.local/shared/<token>, read straight from the content URI (no copy).
+    private volatile Uri sharedUri;
+    private volatile int sharedToken = 0;
+    private boolean pageLoaded = false;
+    private boolean sharedPending = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -83,6 +96,59 @@ public class MainActivity extends Activity {
         setUpEdgeToEdge(dark, bg);
         configureWebView();
         web.loadUrl(START_URL);
+        handleIncoming(getIntent());
+        ScreenshotJob.schedule(this); // re-arm if enabled
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIncoming(intent);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Permission may have been revoked in Settings while we were away.
+        if (ScreenshotJob.isEnabled(this) && !ScreenshotJob.hasMediaPermission(this)) {
+            ScreenshotJob.setEnabled(this, false);
+            reportAlerts(false, "Photo access was turned off, so screenshot alerts are off");
+        }
+    }
+
+    // ---- Share → OCR Scanner, and taps on screenshot notifications ----
+    @SuppressWarnings("deprecation")
+    private void handleIncoming(Intent intent) {
+        if (intent == null) return;
+        Uri uri = null;
+        String action = intent.getAction();
+        if (Intent.ACTION_SEND.equals(action)) {
+            String type = intent.getType();
+            if (type == null || !type.startsWith("image/")) return;
+            uri = Build.VERSION.SDK_INT >= 33
+                    ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class)
+                    : (Uri) intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (uri == null && intent.getClipData() != null && intent.getClipData().getItemCount() > 0) {
+                uri = intent.getClipData().getItemAt(0).getUri();
+            }
+        } else if (ScreenshotJob.ACTION_SCAN.equals(action)) {
+            uri = intent.getData();
+            int id = intent.getIntExtra(ScreenshotJob.EXTRA_NOTIF_ID, 0);
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null && id != 0) nm.cancel(id);
+        }
+        if (uri == null || !"content".equals(uri.getScheme())) return;
+        sharedUri = uri;
+        sharedToken++;
+        if (pageLoaded) deliverShared(); else sharedPending = true;
+        intent.setAction(null); // don't re-scan on recreate
+    }
+
+    private void deliverShared() {
+        sharedPending = false;
+        web.evaluateJavascript("window.openSharedImage && window.openSharedImage('https://"
+                + HOST + SHARED_PREFIX + sharedToken + "')", null);
     }
 
     private boolean isDarkMode() {
@@ -165,6 +231,7 @@ public class MainActivity extends Activity {
             String path = u.getPath();
             if (path == null || path.equals("/")) path = "/index.html";
             if (path.contains("..")) return empty(400, "Bad Request");
+            if (path.startsWith(SHARED_PREFIX)) return serveShared(path);
             try {
                 InputStream in;
                 try {
@@ -187,6 +254,33 @@ public class MainActivity extends Activity {
                 return r;
             } catch (IOException e) {
                 return empty(404, "Not Found");
+            }
+        }
+
+        private WebResourceResponse serveShared(String path) {
+            Uri uri = sharedUri;
+            if (uri == null || !path.equals(SHARED_PREFIX + sharedToken)) return empty(404, "Not Found");
+            try {
+                InputStream in = getContentResolver().openInputStream(uri);
+                if (in == null) return empty(404, "Not Found");
+                String type = getContentResolver().getType(uri);
+                if (type == null || !type.startsWith("image/")) type = "image/jpeg";
+                WebResourceResponse r = new WebResourceResponse(type, null, in);
+                Map<String, String> h = new HashMap<String, String>();
+                h.put("Cache-Control", "no-store");
+                h.put("X-Content-Type-Options", "nosniff");
+                r.setResponseHeaders(h);
+                return r;
+            } catch (Exception e) {
+                return empty(404, "Not Found");
+            }
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            if (url != null && HOST.equals(Uri.parse(url).getHost())) {
+                pageLoaded = true;
+                if (sharedPending) deliverShared();
             }
         }
 
@@ -271,6 +365,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        if (code == REQ_ALERTS) { finishEnablingAlerts(); return; }
         if (code == REQ_CAMERA && pendingPermission != null) {
             if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
                 pendingPermission.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
@@ -329,6 +424,26 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public boolean getScreenshotAlerts() {
+            return ScreenshotJob.isEnabled(MainActivity.this) && ScreenshotJob.hasMediaPermission(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void setScreenshotAlerts(final boolean on) {
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (!isTrustedPage()) return;
+                if (!on) {
+                    ScreenshotJob.setEnabled(MainActivity.this, false);
+                    reportAlerts(false, null);
+                    return;
+                }
+                List<String> need = missingAlertPermissions();
+                if (need.isEmpty()) { finishEnablingAlerts(); return; }
+                requestPermissions(need.toArray(new String[0]), REQ_ALERTS);
+            }});
+        }
+
+        @JavascriptInterface
         public void setCameraOpen(final boolean open) {
             runOnUiThread(new Runnable() { @Override public void run() {
                 if (!isTrustedPage()) return;
@@ -336,6 +451,60 @@ public class MainActivity extends Activity {
                 updateBackCallback();
             }});
         }
+    }
+
+    // ---- Screenshot alerts (opt-in) ----
+    private List<String> missingAlertPermissions() {
+        List<String> need = new ArrayList<String>();
+        if (!ScreenshotJob.hasMediaPermission(this)) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                need.add(Manifest.permission.READ_MEDIA_IMAGES);
+                if (Build.VERSION.SDK_INT >= 34) need.add("android.permission.READ_MEDIA_VISUAL_USER_SELECTED");
+            } else {
+                need.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+            }
+        }
+        if (!ScreenshotJob.hasNotificationPermission(this)) need.add(Manifest.permission.POST_NOTIFICATIONS);
+        return need;
+    }
+
+    private void finishEnablingAlerts() {
+        boolean media = ScreenshotJob.hasMediaPermission(this);
+        boolean notif = ScreenshotJob.hasNotificationPermission(this);
+        if (media && notif) {
+            ScreenshotJob.setEnabled(this, true);
+            reportAlerts(true, null);
+            return;
+        }
+        ScreenshotJob.setEnabled(this, false);
+        String msg;
+        if (!media && Build.VERSION.SDK_INT >= 34
+                && checkSelfPermission("android.permission.READ_MEDIA_VISUAL_USER_SELECTED")
+                   == PackageManager.PERMISSION_GRANTED) {
+            msg = "Needs \"Allow all\" photo access to see new screenshots.";
+        } else if (!media) {
+            msg = "Needs photo access to see new screenshots.";
+        } else {
+            msg = "Needs notification permission.";
+        }
+        // If Android won't show the prompt again (denied twice), send the user to App info.
+        boolean canAskAgain = false;
+        for (String p : missingAlertPermissions()) {
+            if (shouldShowRequestPermissionRationale(p)) canAskAgain = true;
+        }
+        reportAlerts(false, canAskAgain ? msg : msg + " Opening Settings…");
+        if (!canAskAgain) {
+            try {
+                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", getPackageName(), null)));
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private void reportAlerts(boolean on, String message) {
+        if (web == null) return;
+        String m = message == null ? "null" : "'" + message.replace("\\", "\\\\").replace("'", "\\'") + "'";
+        web.evaluateJavascript("window.onScreenshotAlerts && window.onScreenshotAlerts(" + on + "," + m + ")", null);
     }
 
     // ---- Back handling: predictive back on API 33+, legacy below ----
