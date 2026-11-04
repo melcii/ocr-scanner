@@ -1,21 +1,27 @@
-# OCR Scanner (Android, fully offline)
+# OCR Scanner
 
-Image-to-text scanner. Tesseract OCR (WebAssembly) + English & Turkish models ship inside the APK;
-the app refuses every network request, so images never leave the phone.
+An Android app that turns photos of text into text you can copy, edit and share, all on your phone and fully offline.
 
-Features: in-app camera with flash, gallery import, rotate, English / Türkçe / both, editable result, copy & share.
-Share any image to "OCR Scanner" from another app (e.g. the screenshot preview) to scan it instantly.
-Optional "Screenshot alerts" (off by default): a notification after each screenshot offering to scan it. It uses Android's content-change job trigger, so nothing runs in the background between screenshots; it needs photo + notification permission.
+Point your camera at a page, sign or screenshot and get the text out of it. The app never connects to the internet, so your images and text stay on your phone.
 
-## Get the APK — pick one
-1. **GitHub (no installs):** push this folder to a GitHub repo → Actions tab → "Build APK" runs automatically →
-   download `OCRScanner-apk` from the run (~10 MB APK inside the zip).
-2. **Android Studio:** File → Open this folder → Build → Build APK(s).
-3. **Command line with the SDK:** `./build-local.sh` (needs build-tools + platform 37).
+## Features
 
-Install: copy the APK to the phone and open it (allow "install unknown apps" when asked). Android 7.0+, built for Android 17 (API 37).
+- **Scan with the camera** (with flash) or **pick an image** from your gallery
+- **English, Turkish, or both** at once
+- **Rotate** the image before scanning
+- **Edit, copy or share** the text it finds
+- **Share to OCR Scanner** from any app, such as the screenshot preview, to scan an image right away
+- **Screenshot alerts** (optional, off by default): after you take a screenshot, a notification offers to scan it
+- **Private by design**: no internet access, no accounts, no tracking
 
-## Layout
-- `app/src/main/assets/www/index.html` — the whole UI + OCR logic
-- `app/src/main/java/.../MainActivity.java` — WebView shell: serves bundled files, blocks network, camera/gallery/copy/share
-- To add a language: drop `<code>.traineddata.gz` (from npm `@tesseract.js-data/<code>`, folder `4.0.0_best_int`) into `www/lang/` and add a chip in `index.html`.
+## Download
+
+**[Download the latest APK](https://github.com/melcii/ocr-scanner/releases/latest/download/OCRScanner.apk)** (about 8 MB)
+
+To install it, open the downloaded file on your phone. Android may ask you to allow installs from your browser or file manager the first time.
+
+Works on Android 7.0 and later.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
